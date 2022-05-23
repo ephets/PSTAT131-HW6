@@ -1,0 +1,148 @@
+---
+title: "PSTAT 131 - HW 6"
+author: "Ephets Head"
+date: "5/19/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, echo=FALSE, include=FALSE}
+#load packages
+library(tidymodels)
+library(tidyverse)
+library(rsample)
+library(ggplot2)
+library(kernlab)
+library(dplyr)
+library(discrim)
+library(workflowsets)
+library(workflows)
+library(glmnet)
+library(caret)
+library(tune)
+library(janitor)
+library(corrplot)
+library(corrr)
+library(rpart.plot)
+```
+
+**Exercise 1: Read in the pokemon data and set up things as in HW 5: **
+
+**Use `clean_names()`, filter out the rarer Pokémon types, and convert `type_1`, `legendary`, and `generation` to factors. **
+
+```{r}
+#1. read in the data
+setwd()
+pokemon <- ("data/Pokemon.csv")
+
+#2. clean the names
+Pokemon <- clean_names(pokemon)
+
+#3. filter out the rare Pokémon types
+Pokemon <- Pokemon %>%
+  filter(
+    type_1 %in% c("Bug","Fire","Grass","Normal","Water","Psychic")
+  )
+
+#4. Convert type_1, legendary, generation to factors
+Pokemon <- Pokemon %>%
+  mutate(
+    type_1 = factor(type_1),
+    legendary = factor(legendary),
+    generation = factor(generation)
+  )
+```
+
+**Do an initial split of the data, stratified by the outcome variable. Fold the training set using v-fold cross-validation, with `v=5`. Stratify on the outcome variable. **
+**Set up a recipe to predict `type_1` with `legendary`, `generation`, `sp_attack`, `attack`, `speed`, `defense`, `hp`, and `sp_def`: Dummy-code `legendary` and `generation`, and center/scale all predictors. **
+
+```{r}
+#first we will do our stratified initial split of the data
+set.seed(5555)
+pokemon_split <- initial_split(Pokemon, prop=0.75, strata=type_1)
+pokemon_train <- training (pokemon_split)
+pokemon_test <- testing(pokemon_split)
+
+#next we will fold the training set using v-fold cross-validation with v=5
+pokemon_folds <- vfold_cv(pokemon_train, v=5, strata=type_1)
+
+#next we will set up a recipe to predict type_1
+pokemon_rec <- recipe(type_1 ~ legendary + generation + sp_atk + attack + speed + defense + hp + sp_def, data=pokemon_train) %>%
+  step_dummy(legendary) %>%
+  step_dummy(generation) %>%
+  step_center(all_predictors()) %>%
+  step_scale(all_predictors())
+```
+
+**Exercise 2: Create a correlation matrix of the training set, using the `corrplot` package. You can choose how to handle continuous variables for this plot, and justify your decisions. What relationships do you notice? Do these relationships make sense to you?**
+
+```{r}
+
+pokemon_cor <- cor(pokemon_train[sapply(pokemon_train, is.numeric)])
+corrplot(pokemon_cor, method='number')
+
+```
+Correlations between continuous variables are represented by correlation coefficients, color coded to show which variables have the strongest correlations. As you might guess, the predictor `total` is the most strongly correlated with all the other variables, as it is the sum of all other statistics and is directly computed from them. `sp_atk` and `sp_def` are pretty positively correlated, as are `defense` and `attack`. 
+
+**Exercise 3: First, set up a decision tree model and work flow. Tune the `cost_complexity` hyper-parameter. Use the same levels we used in lab 7 (that is, range = c(-3,-1)). Specify that the metric we want to optimize is `roc_auc`. **
+
+**Print an `autoplot()` of the results. What do you observe? Does a single decision tree perform better with a smaller or larger complexity penalty?**
+
+```{r}
+tree_spec <- decision_tree() %>%
+  set_engine("rpart") %>%
+  set_mode("classification")
+
+tree_workflow <- workflow() %>%
+  add_model(tree_spec %>% set_args(cost_complexity=tune())) %>%
+  add_recipe(pokemon_rec)
+
+#use levels range=c(-3,-1)
+param_grid <- grid_regular(cost_complexity(range=c(-3,-1)), levels=10)
+
+tuned_wf <- tune_grid(
+  tree_workflow,
+  resamples=pokemon_folds,
+  grid=param_grid,
+  metrics = metric_set(roc_auc)
+)
+
+autoplot(tuned_wf)
+```
+
+From the above plot of the tuned/fitted object, it seems like a decision tree performs much better (has a higher ROC AUC) with a smaller cost-complexity parameter. 
+
+**Exercise 4: What is the `roc_auc` of your best-performing pruned decision tree on the folds? (Hint: use `collect_metrics()` and `arrange()`)**
+
+```{r}
+#using collect_metrics() and arrange(), create a dataset of the top roc_auc decision trees
+tuned_metrics <- collect_metrics(tuned_wf)
+ordered_metrics <- arrange(tuned_metrics, increasing=FALSE)
+
+#output the highest roc_auc
+head(ordered_metrics,1)
+```
+
+The roc_auc of the best-performing decision tree is about 0.643.
+
+**Exercise 5: Using `rpart.plot`, fit and visualize your best-performing pruned decision tree with the *training* set. **
+
+```{r}
+#select the best-performing model
+best_costcomplex <- select_best(tuned_wf)
+
+#finalize the workflow using this model
+final_wf <- finalize_workflow(tree_workflow,best_costcomplex)
+
+#fit the model to the training set
+fitted_cctree <- fit(final_wf, data=pokemon_train)
+
+#using rpart.plot to visualize the fitted decision tree 
+fitted_cctree %>%
+  extract_fit_engine() %>%
+  rpart.plot()
+```
+
