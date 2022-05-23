@@ -35,7 +35,6 @@ library(rpart.plot)
 
 ```{r}
 #1. read in the data
-setwd()
 pokemon <- ("data/Pokemon.csv")
 
 #2. clean the names
